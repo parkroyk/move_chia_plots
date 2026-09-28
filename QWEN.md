@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-A single-file Bash utility (`movePlots.sh`) that moves completed [Chia](https://www.chia.net/) plot files (`*.plot`) from a source directory into one or more destination directories in **round-robin** order. Before each move it checks the destination filesystem's free space (via `df`); if a destination lacks room, the next is tried, and if none has room the file is left for later. Moves run as background transfers — up to `--parallel N` (default 2) concurrently, at most one per destination — so a slow cross-filesystem copy doesn't block other plots. Pressing `q` or Ctrl-C aborts in-flight transfers and removes their partial files from the destinations. By default it runs as a watcher re-scanning every 15 seconds; `--once` processes what's present and waits for all in-flight transfers before exiting.
+A single-file Bash utility (`movePlots.sh`) that moves completed [Chia](https://www.chia.net/) plot files (`*.plot`) from a source directory into one or more destination directories in **round-robin** order. Before each move it checks the destination filesystem's free space (via `df`); if a destination lacks room, the next is tried, and if none has room the file is left for later. Moves run as background transfers — up to `--parallel N` (default 2) concurrently, at most one per destination — so a slow cross-filesystem copy doesn't block other plots. Each transfer logs its start (source -> destination) and completion with size and duration; a destination without enough room is skipped silently (not a failure). Pressing `q` or Ctrl-C aborts in-flight transfers and removes their partial files from the destinations. By default it runs as a watcher re-scanning every 15 seconds; `--once` processes what's present and waits for all in-flight transfers before exiting.
 
 ## File Layout
 
@@ -46,7 +46,7 @@ MOVE_PLOTS_INTERVAL=5 ./movePlots.sh /path/to/source /path/dest1
 
 ## Development Conventions
 
-- Style: plain procedural bash, `set -u`, small helper functions (`log`, `usage`, `file_size`, `free_kb`, `human_size`, `reap_jobs`, `is_active`, `dest_busy`, `pending_count`, `poll_tick`, `transfer`, `abort_transfers`, `on_quit`, `start_transfer`, `scan_source`, `main`), local variables declared per function with `local`.
+- Style: plain procedural bash, `set -u`, small helper functions (`log`, `usage`, `file_size`, `free_kb`, `human_size`, `human_duration`, `reap_jobs`, `is_active`, `dest_busy`, `pending_count`, `poll_tick`, `transfer`, `abort_transfers`, `on_quit`, `start_transfer`, `scan_source`, `main`), local variables declared per function with `local`.
 - All user-facing output goes through `log()` which prepends a timestamp.
 - Keep the README in sync when changing flags, environment variables, or behavior — it documents the CLI contract (options table, examples, sample output).
 - Commit messages: descriptive sentence case naming files and purpose (e.g., "Initial commit: movePlots.sh with README and MIT license").
@@ -72,4 +72,4 @@ bash -c '
 '
 ```
 
-Stubbing `free_kb() { echo 0; }` exercises the no-space/retry path and confirms `--once` exits (code 1) instead of looping forever. To test quit/cleanup, stub `mv` so it writes a partial destination file first (`dd if=/dev/zero of="$dst/$base" bs=1k count=8`) and stalls, then send `kill -TERM` to the script's PID — SIGINT can't be trapped when the script is backgrounded from a non-interactive shell — and verify the partial is removed while the source stays put.
+Stubbing `free_kb() { echo 0; }` exercises the silent no-space skip and confirms `--once` exits (code 1) instead of looping forever. To test quit/cleanup, stub `mv` so it writes a partial destination file first (`dd if=/dev/zero of="$dst/$base" bs=1k count=8`) and stalls, then send `kill -TERM` to the script's PID — SIGINT can't be trapped when the script is backgrounded from a non-interactive shell — and verify the partial is removed while the source stays put.

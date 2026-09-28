@@ -30,7 +30,6 @@ rr_index=0
 ACTIVE_PIDS=()   # pids of in-flight transfers (parallel to ACTIVE_FILES/DESTS)
 ACTIVE_FILES=()  # source paths currently being transferred
 ACTIVE_DESTS=()  # destination directory each transfer is writing to
-LAST_STARTED=0   # transfers launched by the most recent scan
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 
@@ -76,6 +75,15 @@ human_size() { # bytes -> human readable
     while (v >= 1024 && i < 5) { v /= 1024; i++ }
     printf "%.1f %s", v, u[i]
   }'
+}
+
+human_duration() { # seconds -> "42s" or "3m 12s"
+  local s="${1:-0}"
+  if [ "$s" -lt 60 ]; then
+    printf '%ss' "$s"
+  else
+    printf '%sm %ss' $((s / 60)) $((s % 60))
+  fi
 }
 
 # Drop finished transfers from the tracking lists. bash reaps its own
@@ -154,15 +162,19 @@ poll_tick() {
   return 0
 }
 
-# Background worker for one move. If mv fails, the source file is still in
-# place (mv copies then deletes), so any partial file at the destination is
-# ours to remove; if the source is gone the copy had completed and the
-# destination file is kept.
+# Background worker for one move. Logs the start (source -> destination) and,
+# on success, the completion with size and duration. If mv fails, the source
+# file is still in place (mv copies then deletes), so any partial file at the
+# destination is ours to remove; if the source is gone the copy had completed
+# and the destination file is kept.
 transfer() {
-  local f="$1" dest="$2" bytes="$3" base
+  local f="$1" dest="$2" bytes="$3" base start elapsed
   base=$(basename "$f")
+  log "${base}: moving to ${dest}"
+  start=$(date +%s)
   if mv -- "$f" "$dest/"; then
-    log "$(basename "$f"): moved to ${dest} ($(human_size "$bytes"))"
+    elapsed=$(( $(date +%s) - start ))
+    log "${base}: moved to ${dest} ($(human_size "$bytes") in $(human_duration "$elapsed"))"
   else
     [ -f "$f" ] && rm -f "${dest}/${base}" 2>/dev/null
     log "Error: failed to move '$f' to '$dest'"
@@ -211,7 +223,7 @@ on_quit() {
   exit "$code"
 }
 
-start_transfer() { # launch a background transfer for $1; returns 1 if no dest is available
+start_transfer() { # launch a background transfer for $1; returns 1 if no dest is available right now
   local f="$1" bytes size_kb i dest free pid
   bytes=$(file_size "$f") || return 1
   size_kb=$(( (bytes + 1023) / 1024 ))
@@ -220,10 +232,7 @@ start_transfer() { # launch a background transfer for $1; returns 1 if no dest i
     dest="${VALID_DESTS[$(( (rr_index + i) % N ))]}"
     dest_busy "$dest" && continue # one transfer per destination at a time
     free=$(free_kb "$dest") || continue
-    if [ "$free" -lt "$size_kb" ]; then
-      log "$(basename "$f"): ${dest} has only $(human_size $((free * 1024))) free, needs $(human_size "$bytes") - trying next destination"
-      continue
-    fi
+    [ "$free" -lt "$size_kb" ] && continue # silently skip: not enough room
     rr_index=$(( (rr_index + i + 1) % N )) # reserve the destination up front
     transfer "$f" "$dest" "$bytes" &
     pid=$!
@@ -233,31 +242,21 @@ start_transfer() { # launch a background transfer for $1; returns 1 if no dest i
     return 0
   done
 
-  log "$(basename "$f"): no destination available (busy or low on space); will retry"
-  return 1
+  return 1 # no destination available right now (busy or low on space): retry later
 }
 
 scan_source() { # start transfers for pending plots, up to the concurrency limit
-  local f failed=0 quiet="${1:-}"
-  LAST_STARTED=0
+  local f
   reap_jobs
   shopt -s nullglob
   for f in "$SOURCE"/*.plot; do
     [ -f "$f" ] || continue
     is_active "$f" && continue
     if [ ${#ACTIVE_PIDS[@]} -ge "$PARALLEL" ]; then break; fi
-    if start_transfer "$f"; then
-      LAST_STARTED=$((LAST_STARTED + 1))
-    else
-      failed=1
-    fi
+    start_transfer "$f" || continue # no destination available right now: not a failure
   done
   shopt -u nullglob
-  # With "quiet" (used by --once polling), skip no-op summaries.
-  if [ -z "$quiet" ] || [ "$LAST_STARTED" -gt 0 ] || [ "$failed" -gt 0 ]; then
-    log "Scan: $LAST_STARTED transfer(s) started, ${#ACTIVE_PIDS[@]} in flight, $failed failure(s)"
-  fi
-  return $failed
+  return 0
 }
 
 main() {
@@ -318,7 +317,7 @@ main() {
       [ ${#ACTIVE_PIDS[@]} -eq 0 ] && break
       before=${#ACTIVE_PIDS[@]}
       poll_tick || on_quit 0 # 'q' pressed: abort transfers and exit
-      [ ${#ACTIVE_PIDS[@]} -lt "$before" ] && scan_source quiet # a slot freed
+      [ ${#ACTIVE_PIDS[@]} -lt "$before" ] && scan_source # a slot freed
     done
     wait
     if [ "$(pending_count)" -gt 0 ]; then return 1; fi

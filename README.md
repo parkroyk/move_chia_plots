@@ -7,7 +7,8 @@ A bash script that moves completed [Chia](https://www.chia.net/) plot files from
 - Scans the source directory for completed plots (`*.plot` files). In-progress plots (`*.plot.tmp`) are ignored — Chia renames them to `.plot` only when plotting finishes.
 - Distributes plots across the destination directories in round-robin fashion: each transfer starts at the current rotation position, and the rotation advances past the chosen destination as soon as the transfer is launched, so plots spread evenly.
 - Transfers run as background jobs: up to `--parallel N` (default 2) plots are moved concurrently, so a slow cross-filesystem copy does not block other completed plots. At most one transfer writes to a given destination at a time, so effective concurrency is the smaller of `--parallel` and the number of destinations. Files already being transferred are skipped by later scans.
-- Before launching a transfer, it compares the file size against the available space on the destination's filesystem (via `df`). If the destination does not have enough room or is already receiving a transfer, the next one is tried. If **no** destination is available, the file is left in place and retried later.
+- Each transfer logs its start (`name.plot: moving to DEST`) and, on completion, the size and how long it took (`name.plot: moved to DEST (SIZE in TIME)`).
+- Before launching a transfer, it compares the file size against the available space on the destination's filesystem (via `df`). A destination without enough room — or already receiving a transfer — is silently skipped; if **no** destination is available, the file is left in place and retried later.
 - By default it runs as a watcher, re-scanning every 15 seconds so it can keep up with an active plotter. `--once` waits for all in-flight transfers to finish before exiting.
 - Press `q` (in an interactive terminal) or Ctrl-C to stop. In-flight transfers are aborted and any partially copied files are removed from their destinations; moves that had already completed are kept. Interrupted plots stay in the source directory and are picked up on the next run.
 
@@ -61,17 +62,17 @@ MOVE_PLOTS_INTERVAL=5 ./movePlots.sh /Volumes/Plotter/plots /Volumes/Storage1/pl
 
 ```
 2026-09-25 23:00:05 Watching '/Volumes/Plotter/plots' -> /Volumes/Storage1/plots /Volumes/Storage2/plots (every 15s, up to 2 concurrent transfer(s), one per destination; press q (or Ctrl-C) to quit)
-2026-09-25 23:00:05 Scan: 0 transfer(s) started, 0 in flight, 0 failure(s)
-2026-09-25 23:00:20 Scan: 2 transfer(s) started, 2 in flight, 0 failure(s)
-2026-09-25 23:01:42 plot-k32-2026-09-25-...-abc123.plot: moved to /Volumes/Storage1/plots (107.3 GB)
-2026-09-25 23:01:58 plot-k32-2026-09-25-...-def456.plot: moved to /Volumes/Storage2/plots (107.3 GB)
+2026-09-25 23:00:20 plot-k32-2026-09-25-...-abc123.plot: moving to /Volumes/Storage1/plots
+2026-09-25 23:00:20 plot-k32-2026-09-25-...-def456.plot: moving to /Volumes/Storage2/plots
+2026-09-25 23:01:42 plot-k32-2026-09-25-...-abc123.plot: moved to /Volumes/Storage1/plots (107.3 GB in 82s)
+2026-09-25 23:01:58 plot-k32-2026-09-25-...-def456.plot: moved to /Volumes/Storage2/plots (107.3 GB in 98s)
 ```
 
-If a destination is nearly full you will see the fallback in action:
+If a destination is nearly full it is skipped silently — the plot simply lands on the next one:
 
 ```
-plot-k32-...-def456.plot: /Volumes/Storage1/plots has only 50.2 GB free, needs 107.3 GB - trying next destination
-plot-k32-...-def456.plot: moved to /Volumes/Storage2/plots (107.3 GB)
+plot-k32-...-def456.plot: moving to /Volumes/Storage2/plots
+plot-k32-...-def456.plot: moved to /Volumes/Storage2/plots (107.3 GB in 98s)
 ```
 
 If you press `q` while a move is in flight, the partial copy is removed and the plot stays in the source directory for the next run:
